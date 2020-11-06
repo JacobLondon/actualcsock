@@ -18,6 +18,9 @@
     <ClCompile Include="src\acs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\acs.h">

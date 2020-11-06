@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdio.h>
 
 #include "acs.h"
@@ -5,17 +6,24 @@
 int main(void)
 {
     char buf[128] = "Whoaaa hello!";
+    struct acs *com;
 
-    acs_init("127.0.0.1", "9999");
+    acs_init();
 
-    acs_send(buf, sizeof(buf));
+    com = acs_new("127.0.0.1", "9999");
+    assert(com);
 
-    acs_recv(buf, sizeof(buf));
-    printf("%s", buf);
+    acs_send(com, buf, sizeof(buf));
 
+    acs_recv(com, buf, sizeof(buf));
+    printf("%s\n", buf);
+
+    acs_del(com);
     acs_cleanup();
 
-    getchar();
+    #ifdef _WIN32
+        getchar();
+    #endif
 
     return 0;
 }

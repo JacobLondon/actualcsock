@@ -29,13 +29,21 @@
 #endif // _WIN32
 
 static int initialized = 0;
-#ifdef _WIN32
-    static SOCKET fd = SOCKET_ERROR;
-#else
-    static int fd = -1;
-#endif
 
-static int acs_dial(
+struct acs {
+#ifdef _WIN32
+    SOCKET fd;
+#else
+    int fd;
+#endif
+    const char *host;
+    const char *port;
+};
+
+/**
+ * Dial a server
+ */
+static enum acs_code acs_dial(
     #ifdef _WIN32
         SOCKET *clientfd,
     #else
@@ -44,7 +52,7 @@ static int acs_dial(
     const char *host,
     const char *port);
 
-int acs_init(const char *host, const char *port)
+enum acs_code acs_init(void)
 {
     #ifdef _WIN32
         WSADATA wsa;
@@ -52,94 +60,187 @@ int acs_init(const char *host, const char *port)
     #endif
 
     assert(!initialized);
-    assert(host);
-    assert(port);
 
     #ifdef _WIN32
         // Windows being extra...
         rv = WSAStartup(MAKEWORD(2, 2), &wsa);
         if (rv != 0) {
             (void)fprintf(stderr, "WSAStartup: Error: %d\n", WSAGetLastError());
-            return 1;
+            return ACS_ERROR;
         }
     #endif // _WIN32
 
-    // dial that host
-    if (acs_dial(&fd, host, port) != 0) {
-        return 1;
-    }
-
     initialized = 1;
-    return 0;
+    return ACS_OK;
 }
 
 void acs_cleanup(void)
 {
     assert(initialized);
-    #ifdef _WIN32
-        if (fd != INVALID_SOCKET) {
-            (void)closesocket(fd);
-            fd = SOCKET_ERROR;
-        }
-        WSACleanup();
-    #else
-        if (fd != -1) {
-            (void)close(fd);
-            fd = -1;
-        }
-    #endif
     initialized = 0;
 }
 
-int acs_send(char *buf, size_t bytes)
+struct acs *acs_new(const char *host, const char *port)
 {
-    int rv;
+    struct acs *self;
 
     assert(initialized);
-    assert(buf);
+    assert(host);
+    assert(port);
 
-    rv = send(fd, buf, bytes, 0);
+    self = malloc(sizeof(*self));
+    if (!self) {
+        return NULL;
+    }
+
     #ifdef _WIN32
-        if (rv == SOCKET_ERROR) {
-            (void)fprintf(stderr, "send: Error: %d\n", WSAGetLastError());
-            return -1;
-        }
+        self->fd = SOCKET_ERROR;
     #else
-        if (rv == -1) {
-            (void)fprintf(stderr, "send: Error: %s\n", strerror(errno));
-            return -1;
+        self->fd = -1;
+    #endif
+    self->host = host;
+    self->port = port;
+
+    return self;
+}
+
+void acs_del(struct acs *self)
+{
+    assert(initialized);
+    assert(self);
+
+    #ifdef _WIN32
+        if (self->fd != INVALID_SOCKET) {
+            (void)closesocket(self->fd);
+            self->fd = SOCKET_ERROR;
+        }
+        WSACleanup();
+    #else
+        if (self->fd != -1) {
+            (void)close(self->fd);
+            self->fd = -1;
         }
     #endif
-
-    return rv;
+    free(self);
 }
 
-int acs_recv(char *buf, size_t bytes)
+enum acs_code acs_send(struct acs *self, char *buf, size_t bytes)
+{
+    int rv;
+    long offset = 0;
+
+    assert(initialized);
+    assert(self);
+    assert(buf);
+
+    // dial host if ever not connected
+    if (
+        #ifdef _WIN32
+            self->fd == SOCKET_ERROR
+        #else
+            self->fd == -1
+        #endif
+        )
+    {
+        rv = acs_dial(&self->fd, self->host, self->port);
+        if (rv != 0) {
+            return ACS_ERROR;
+        }
+    }
+
+    while (1) {
+        rv = send(self->fd, &buf[offset], bytes - offset, 0);
+
+        // check for failure
+        #ifdef _WIN32
+            if (rv == SOCKET_ERROR) {
+                #ifndef NDEBUG
+                    (void)fprintf(stderr, "send: Error: %d\n", WSAGetLastError());
+                #endif
+                (void)closesocket(self->fd);
+                self->fd = SOCKET_ERROR;
+                return ACS_ERROR;
+            }
+        #else
+            if (rv == -1) {
+                #ifndef NDEBUG
+                    (void)fprintf(stderr, "send: Error: %s\n", strerror(errno));
+                #endif
+                (void)close(self->fd);
+                self->fd = -1;
+                return ACS_ERROR;
+            }
+        #endif
+
+        offset += rv;
+
+        if (((long)bytes) - offset <= 0) {
+            break;
+        }
+    }
+    return ACS_OK;
+}
+
+enum acs_code acs_recv(struct acs *self, char *buf, size_t bytes)
 {
     int rv;
 
     assert(initialized);
+    assert(self);
     assert(buf);
 
-    rv = recv(fd, buf, bytes, 0);
+    // dial host if ever not connected
+    if (
+        #ifdef _WIN32
+            self->fd == SOCKET_ERROR
+        #else
+            self->fd == -1
+        #endif
+        )
+    {
+        rv = acs_dial(&self->fd, self->host, self->port);
+        if (rv != 0) {
+            return ACS_ERROR;
+        }
+    }
+
+    rv = recv(self->fd, buf, bytes, 0);
     if (rv > 0) {
-        return 1;
+        return ACS_OK;
     }
     else if (rv == 0) {
-        (void)fprintf(stderr, "recv: Connection closed\n");
-        return 0;
+        #ifndef NDEBUG
+            (void)fprintf(stderr, "recv: Connection closed\n");
+        #endif
+        #ifdef _WIN32
+            (void)closesocket(self->fd);
+            self->fd = SOCKET_ERROR;
+        #else
+            (void)close(self->fd);
+            self->fd = -1;
+        #endif
+        return ACS_RESET;
     }
     else {
+        #ifndef NDEBUG
+            #ifdef _WIN32
+                (void)fprintf(stderr, "recv: Error: %d\n", WSAGetLastError());
+            #else
+                (void)fprintf(stderr, "recv: Error: %s\n", strerror(errno));
+            #endif // _WIN32
+        #endif
         #ifdef _WIN32
-            (void)fprintf(stderr, "recv: Error: %d\n", WSAGetLastError());
+            (void)closesocket(self->fd);
+            self->fd = SOCKET_ERROR;
         #else
-            (void)fprintf(stderr, "recv: Error: %s\n", strerror(errno));
-        #endif // _WIN32
-        return -1;
+            (void)close(self->fd);
+            self->fd = -1;
+        #endif
+        return ACS_ERROR;
     }
 }
 
-static int acs_dial(
+static enum acs_code acs_dial(
     #ifdef _WIN32
         SOCKET *clientfd,
     #else
@@ -168,8 +269,10 @@ static int acs_dial(
 
     rv = getaddrinfo(host, port, &hints, &ai);
     if (rv != 0) {
-        (void)fprintf(stderr, " getaddrinfo: Error: %d\n", rv);
-        return 1;
+        #ifndef NDEBUG
+            (void)fprintf(stderr, " getaddrinfo: Error: %d\n", rv);
+        #endif
+        return ACS_ERROR;
     }
 
     // connect UP!
@@ -177,13 +280,17 @@ static int acs_dial(
         sockfd = socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
         #ifdef _WIN32
             if (sockfd == INVALID_SOCKET) {
-                (void)fprintf(stderr, "socket: Error: %d\n", WSAGetLastError());
-                return 2;
+                #ifndef NDEBUG
+                    (void)fprintf(stderr, "socket: Error: %d\n", WSAGetLastError());
+                #endif
+                return ACS_ERROR;
             }
         #else
             if (sockfd == -1) {
-                (void)fprintf(stderr, "socket: Error: %s\n", strerror(errno));
-                return 2;
+                #ifndef NDEBUG
+                    (void)fprintf(stderr, "socket: Error: %s\n", strerror(errno));
+                #endif
+                return ACS_ERROR;
             }
         #endif
 
@@ -212,16 +319,20 @@ static int acs_dial(
     // did we reach end of loop without finding it?
     #ifdef _WIN32
         if (sockfd == INVALID_SOCKET) {
-            (void)fprintf(stderr, "Unable to connect to server\n");
-            return 3;
+            #ifndef NDEBUG
+                (void)fprintf(stderr, "Unable to connect to server\n");
+            #endif
+            return ACS_ERROR;
         }
     #else
         if (sockfd == -1) {
-            (void)fprintf(stderr, "Unable to connect to server\n");
-            return 3;
+            #ifndef NDEBUG
+                (void)fprintf(stderr, "Unable to connect to server\n");
+            #endif
+            return ACS_ERROR;
         }
     #endif
 
     *clientfd = sockfd;
-    return 0;
+    return ACS_OK;
 }
