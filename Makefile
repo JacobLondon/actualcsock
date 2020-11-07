@@ -9,7 +9,8 @@ CFLAGS=\
 	-pipe \
 	-Wall \
 	-Wextra \
-	-pedantic
+	-pedantic \
+	-Iinclude/tinycthread/source
 
 FILES=\
 	src/acs.c \

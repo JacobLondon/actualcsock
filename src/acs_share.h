@@ -7,7 +7,20 @@
 #ifndef ACS_SHARE_H
 #define ACS_SHARE_H
 
+#include "acs.h"
+
 struct acs_share;
+struct acs_data;
+
+/**
+ * Initialize the library
+ */
+enum acs_code acs_share_init(void);
+
+/**
+ * Cleanup the library
+ */
+void acs_share_cleanup(void);
 
 /**
  * Create a new acs share util by binding \a data its \a size and a way to \a serialize that data
@@ -22,11 +35,19 @@ struct acs_share;
  *      data to share with the server
  * \param size
  *      the sizeof \a data
+ * \param network_buf_size
+ *      the size in bytes of the network buffer. This will be a fixed size, and will
+ *      assume to be able to fit ALL of every other client's serialized data and headers
+ *      all at the same time. Adjust accordingly and carefully.
  * \param serialize
  *      callback to flatten \a data returning where the flat data resides and how long it is
+ * \param deserialize
+ *      callback to unflatten received data into the type of \a data
  */
 struct acs_share *acs_share_new(const char *host, const char *port, void *data, size_t size,
-                                char *(*serialize)(void *data, size_t size, size_t *written));
+                                size_t network_buf_size,
+                                char *(*serialize)(void *data, size_t size, size_t *written),
+                                void *(*deserialize)(void *data, size_t size));
 
 /**
  * Delete the acs share struct
@@ -37,7 +58,14 @@ void acs_share_del(struct acs_share *self);
  * Run the acs share in another thread, reading and writing to and from the server
  * respectively
  */
-void acs_share_run(struct acs_share *self);
+int acs_share_run(struct acs_share *self);
+
+/**
+ * Call every time the other thread should send data to the server, most likely usefully
+ * called in a loop every some period of time, as no calls to this will block from receiving
+ * from the server.
+ */
+void acs_share_update(struct acs_share *self);
 
 /**
  * Read our copy of the shared data from the server, which shall not include our own data.
@@ -58,11 +86,21 @@ void acs_share_run(struct acs_share *self);
  * for (dataptr = acs_share_get_shared(my_acs_share); dataptr; dataptr = acs_share_get_shared(my_acs_share)) {}
  * \endcode
  */
-void *acs_share_get_shared(struct acs_share *self);
+struct acs_data *acs_share_get_shared(struct acs_share *self);
 
 /**
- * Get the UID given to us by the server, -1 if no connection is active
+ * Get the UID given to us by the server, -1 if no connection is active.
  */
 int acs_share_get_uid(struct acs_share *self);
+
+/**
+ * Get a UID from network data
+ */
+int acs_data_get_uid(struct acs_data *self);
+
+/**
+ * Get the data pointer from an acs_data
+ */
+void *acs_data_get_buf(struct acs_data *self);
 
 #endif // ACS_SHARE_H
