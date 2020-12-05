@@ -41,22 +41,23 @@ struct send_data {
 struct acs_sync {
     struct acs *sock;
 
-    thrd_t thread;
+    enum acs_sync_state state;
     int thread_done;
+    thrd_t thread;
 
     // send data
-    mtx_t send_mutex;
+    mtx_t mutex_barrier;
     struct send_data data_main;   // version from main thread
     struct send_data data_thread; // local copy for thread to have
 
     // recv data
-    mtx_t recv_mutex;
     struct list *recv_data;
     struct node **cursor_main;
 
     // record who is connected in a bitmap, set means connected
     unsigned char *client_bitmap;
     size_t client_bitmap_size;
+    size_t client_max;
 };
 
 /*
@@ -149,7 +150,8 @@ static int thread_func(void *client)
         /*
          * Send as acs_sync_write's counterpart
          */
-        mtx_lock(&self->send_mutex);
+        self->state = ACS_SYNC_WRITE; // user may begin reading THEN write
+        mtx_lock(&self->mutex_barrier);
         (void)memcpy(buf, self->data_thread.flatdata, self->data_thread.flatsize);
 
         /*
@@ -214,6 +216,11 @@ static int thread_func(void *client)
 
             // record who was received
             uid = *(uint32_t *)buf; // beginning MUST be an int32_t uid
+
+            // bad read
+            if (uid >= self->client_max) {
+                continue;
+            }
             BIT_SET(self->client_bitmap, uid);
 
             // now we may put the data into the list
@@ -221,10 +228,8 @@ static int thread_func(void *client)
 
             // new client who dis
             if (tmp == NULL) {
-                // have the node take buf and we will need to make a new buf
-                mtx_lock(&self->recv_mutex);
+                // have the node take ownership of buf and we will need to make a new buf
                 list_push_back(self->recv_data, buf);
-                mtx_unlock(&self->recv_mutex);
 
                 buf = malloc(self->data_thread.flatsize);
                 assert(buf);
@@ -232,9 +237,7 @@ static int thread_func(void *client)
             // update existing client
             else {
                 // copy buf into the node's version
-                mtx_lock(&self->recv_mutex);
                 (void)memcpy(tmp->value, buf, self->data_thread.flatsize);
-                mtx_unlock(&self->recv_mutex);
             }
         }
 
@@ -245,7 +248,6 @@ static int thread_func(void *client)
         // look for clients who are disconnected and delete them from the list
         // if a client is in the recv list and their bit is not set/high, then
         // they are disconnected
-        mtx_lock(&self->recv_mutex);
 
         for (cursor = list_iter_begin(self->recv_data);
              !list_iter_done(cursor);
@@ -264,7 +266,9 @@ static int thread_func(void *client)
             }
         }
 
-        mtx_unlock(&self->recv_mutex);
+        // wait for user to read
+        self->state = ACS_SYNC_READ;
+        mtx_lock(&self->mutex_barrier);
     }
 
 out:
@@ -316,7 +320,7 @@ struct acs_sync *acs_sync_new(const char *host, const char *port, size_t max_cli
      * send stuff
      */
 
-    mtx_init(&self->send_mutex, mtx_plain);
+    mtx_init(&self->mutex_barrier, mtx_plain);
 
     self->data_main.flatdata = flatdata;
     self->data_main.flatsize = flatsize;
@@ -328,7 +332,6 @@ struct acs_sync *acs_sync_new(const char *host, const char *port, size_t max_cli
     /*
      * recv stuff
      */
-    mtx_init(&self->recv_mutex, mtx_plain);
     self->recv_data = list_new(free);
     assert(self->recv_data);
     self->cursor_main = NULL;
@@ -337,6 +340,7 @@ struct acs_sync *acs_sync_new(const char *host, const char *port, size_t max_cli
     self->client_bitmap_size = (size_t)ceil((double)max_clients / 8.0);
     self->client_bitmap = malloc(self->client_bitmap_size);
     assert(self->client_bitmap);
+    self->client_max = max_clients;
 
     return self;
 }
@@ -346,7 +350,8 @@ void acs_sync_del(struct acs_sync *self)
     assert(initialized);
     assert(self);
 
-    (void)mtx_unlock(&self->send_mutex);
+    while (mtx_trylock(&self->mutex_barrier) != thrd_busy);
+    (void)mtx_unlock(&self->mutex_barrier);
     if (self->thread_done == 0) {
         self->thread_done = 1;
         (void)thrd_join(self->thread, NULL);
@@ -368,8 +373,7 @@ void acs_sync_del(struct acs_sync *self)
         free(self->client_bitmap);
     }
 
-    mtx_destroy(&self->send_mutex);
-    mtx_destroy(&self->recv_mutex);
+    mtx_destroy(&self->mutex_barrier);
 
     free(self);
 }
@@ -392,18 +396,23 @@ void acs_sync_write(struct acs_sync *self)
 {
     assert(initialized);
     assert(self);
+    assert(self->state == ACS_SYNC_WRITE);
 
     (void)memcpy(self->data_thread.flatdata, self->data_main.flatdata, self->data_thread.flatsize);
-    mtx_unlock(&self->send_mutex);
+
+    // wait until the lock is locked before unlocking it
+    self->state = ACS_SYNC_BUSY;
+    while (mtx_trylock(&self->mutex_barrier) != thrd_busy);
+    mtx_unlock(&self->mutex_barrier);
 }
 
 void *acs_sync_read_next(struct acs_sync *self)
 {
     assert(initialized);
     assert(self);
+    assert(self->state == ACS_SYNC_READ);
 
     if (self->cursor_main == NULL) {
-        mtx_lock(&self->recv_mutex);
         self->cursor_main = list_iter_begin(self->recv_data);
     }
     else {
@@ -411,10 +420,22 @@ void *acs_sync_read_next(struct acs_sync *self)
     }
 
     if (list_iter_done(self->cursor_main)) {
-        mtx_unlock(&self->recv_mutex);
         self->cursor_main = NULL;
+
+        // wait until the lock is locked before unlocking it
+        self->state = ACS_SYNC_BUSY; // user may not touch read/write
+        while (mtx_trylock(&self->mutex_barrier) != thrd_busy);
+        mtx_unlock(&self->mutex_barrier);
+
         return NULL;
     }
 
     return list_iter_value(self->cursor_main);
+}
+
+enum acs_sync_state acs_sync_get_state(struct acs_sync *self)
+{
+    assert(initialized);
+    assert(self);
+    return self->state;
 }

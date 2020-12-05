@@ -2,7 +2,7 @@
 #define ACTUAL_C_SOCKETS_H
 
 /**
- * ACS just client sockets, use something
+ * ACS just blocking TCP client sockets, use something
  * easier for servers like Python's socketserver
  * 
  * Works on Windows (Visual C)
