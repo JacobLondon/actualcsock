@@ -50,6 +50,9 @@ int main(void)
     while (1) {
         printf("> ");
         fgets(me.data, sizeof(me.data), stdin);
+        if (me.data[0] == 'X') {
+            break;
+        }
         acs_sync_write(sync);
 
         // clear clients each iteration to fill with new data
