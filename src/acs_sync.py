@@ -47,6 +47,7 @@ class AcsSync:
                 while True:
                     try:
                         self.data = self.request.recv(this.flatsize)
+                        print(self.data)
                     except:
                         break
 
@@ -65,6 +66,8 @@ class AcsSync:
 
                     # save the client
                     this.clients[uid] = self.data
+
+                    print(this.clients)
 
                     # construct header
                     header = struct.pack("II", uid, len(this.clients) - 1)
@@ -87,5 +90,5 @@ class AcsSync:
             server.serve_forever()
 
 if __name__ == '__main__':
-    sync = AcsSync("localhost", 9999, 256)
+    sync = AcsSync("localhost", 9999, 64)
     sync.run()

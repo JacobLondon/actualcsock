@@ -7,7 +7,7 @@
 
 struct flatdata {
     uint32_t uid;
-    char data[128];
+    char data[32];
 };
 
 #define MAX_CLIENTS 16

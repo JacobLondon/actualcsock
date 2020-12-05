@@ -173,7 +173,8 @@ static int thread_func(void *client)
                 break;
             }
 
-            // wait before retrying to connect
+            // reset UID / wait before retrying to connect
+            *(uint32_t *)self->data_main.flatdata = 0;
             (void)millisleep(10);
         }
 
@@ -184,6 +185,7 @@ static int thread_func(void *client)
         // receive header
         code = acs_recv(self->sock, (char *)&header, sizeof(header));
         if (code != ACS_OK) {
+            *(uint32_t *)self->data_main.flatdata = 0;
             goto send;
         }
 
@@ -193,8 +195,6 @@ static int thread_func(void *client)
 
         // send message to uid which is READONLY from the main thread
         *(uint32_t *)self->data_main.flatdata = header.uid;
-        // we are connected
-        BIT_SET(self->client_bitmap, header.uid);
 
         // no we can fill in who is there or not locally
         (void)memset(self->client_bitmap, 0, self->client_bitmap_size);
@@ -204,6 +204,7 @@ static int thread_func(void *client)
         for ( ; header.obj_count > 0; header.obj_count--) {
             code = acs_recv(self->sock, buf, self->data_thread.flatsize);
             if (code != ACS_OK) {
+                *(uint32_t *)self->data_main.flatdata = 0;
                 goto send;
             }
 
