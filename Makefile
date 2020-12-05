@@ -10,21 +10,22 @@ CFLAGS=\
 	-Wall \
 	-Wextra \
 	-pedantic \
-	-Iinclude/tinycthread/source
+	-Iinclude/tinycthread/source \
+	-lpthread \
+	-lm
 
 FILES=\
+	include/tinycthread/source/tinycthread.c \
 	src/acs.c \
+	src/acs_sync.c \
+	src/list.c \
 	src/test.c
 
 all: $(TARGET)
-
-link:
-	$(CC) -o $(TARGET) src/test.c $(CFLAGS) \
-	-LDebug/socketekcos.lib
 
 # just compile the whole thing...
 $(TARGET): $(FILES)
 	$(CC) -o $@ $^ $(CFLAGS)
 
 clean:
-	rm -rf test
+	rm -rf $(TARGET)

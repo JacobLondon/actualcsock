@@ -21,9 +21,27 @@
     <ClCompile Include="src\test.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\acs_sync.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\list.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="include\tinycthread\source\tinycthread.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\acs.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\acs_sync.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\list.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\tinycthread\source\tinycthread.h">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>

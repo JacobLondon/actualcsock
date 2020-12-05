@@ -65,7 +65,9 @@ enum acs_code acs_init(void)
         // Windows being extra...
         rv = WSAStartup(MAKEWORD(2, 2), &wsa);
         if (rv != 0) {
-            (void)fprintf(stderr, "WSAStartup: Error: %d\n", WSAGetLastError());
+            #ifndef NDEBUG
+                (void)fprintf(stderr, "WSAStartup: Error: %d\n", WSAGetLastError());
+            #endif
             return ACS_ERROR;
         }
     #endif // _WIN32
@@ -319,16 +321,10 @@ static enum acs_code acs_dial(
     // did we reach end of loop without finding it?
     #ifdef _WIN32
         if (sockfd == INVALID_SOCKET) {
-            #ifndef NDEBUG
-                (void)fprintf(stderr, "Unable to connect to server\n");
-            #endif
             return ACS_ERROR;
         }
     #else
         if (sockfd == -1) {
-            #ifndef NDEBUG
-                (void)fprintf(stderr, "Unable to connect to server\n");
-            #endif
             return ACS_ERROR;
         }
     #endif
