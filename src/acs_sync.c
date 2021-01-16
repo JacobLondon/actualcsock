@@ -1,3 +1,44 @@
+/**
+ * ACS Sync
+ * 
+ * The idea is for the main thread to have its data and ask if it is allowed to
+ * send/read data from the server. When the main thread is allowed, no blocking
+ * operations will be performed, the main thread can just go as fast as it can
+ * copy the data, which is synced from the server.
+ * 
+ * The network thread (the internals here) will create barriers that only the main
+ * thread can allow the network thread to pass thru upon a main thread read/write.
+ * As a barrier is hit, a flag that the main thread can read/write is allowed.
+ * 
+ * Note that for ACS_SYNC_READ state, the main thread must call acs_sync_read_next
+ * repeatedly. When the for loop finishes, the network thread will be unlocked so
+ * it may continue doing its business.
+ * 
+ * Main Thread                                          Network Thread
+ * 
+ * acs_sync_init()
+ * 
+ * my_acs_sync = acs_sync_new()
+ * 
+ * acs_sync_run                                         LOCK
+ * 
+ * switch (acs_sync_get_state())
+ * case ACS_SYNC_READ:
+ *                                                      LOCK
+ *   for (p = acs_sync_read_next(my_acs_sync);
+ *        p != NULL;
+ *        p = acs_sync_read_next(my_acs_sync))
+ *   {
+ *     memcopy(dest, p, sizeof(struct flatdata))
+ *   }
+ *                                                      UNLOCK
+ * case ACS_SYNC_WRITE:
+ *   acs_sync_write()
+ *                                                      UNLOCK
+ * default:
+ *   break
+ */
+
 #include <assert.h>
 #include <stdint.h>
 #include <math.h>
@@ -21,11 +62,13 @@
  * Macros
  */
 
+// array of bytes, and the bit position from the start, ie 17 is byte:2 bit:1
 #define BIT_SET(BYTE_POINTER, BITNO) \
     do { \
         ((BYTE_POINTER)[(BITNO) / 8]) |= (1 << ((BITNO) % 8)); \
     } while (0)
 
+// just check if the bit is set
 #define BIT_TEST(BYTE_POINTER, BITNO) \
     ((BYTE_POINTER)[(BITNO) / 8] & (1 << ((BITNO) % 8)))
 
@@ -39,11 +82,11 @@ struct send_data {
 };
 
 struct acs_sync {
-    struct acs *sock;
+    struct acs *sock;             // actual cannibal socket man
 
-    enum acs_sync_state state;
-    int thread_done;
-    thrd_t thread;
+    enum acs_sync_state state;    // pollable item, RDONLY from main, WRONLY for network
+    int thread_done;              // exit flag
+    thrd_t thread;                // thread storage
 
     // send data
     mtx_t mutex_barrier;
@@ -51,22 +94,22 @@ struct acs_sync {
     struct send_data data_thread; // local copy for thread to have
 
     // recv data
-    struct list *recv_data;
-    struct node **cursor_main;
+    struct list *recv_data;       // list holding all other clients' data
+    struct node **cursor_main;    // the cursor the main thread uses during an acs_sync_read_next
 
     // record who is connected in a bitmap, set means connected
-    unsigned char *client_bitmap;
-    size_t client_bitmap_size;
-    size_t client_max;
+    unsigned char *client_bitmap; // use a bitmap to remember which clients are connected
+    size_t client_bitmap_size;    // size in bytes client_bitmap is
+    size_t client_max;            // max number of clients for client_bitmap to hold
 };
 
 /*
  * Static Function Prototypes
  */
 
-static int millisleep(unsigned ms);
-static int data_cmp(void *value, void *query);
-static int thread_func(void *client);
+static int millisleep(unsigned ms); // sleep during a retry to space out attempts
+static int data_cmp(void *value, void *query); // compare client UIDs
+static int thread_func(void *client); // network thread func
 
 /*
  * Static Variables
@@ -163,6 +206,7 @@ static int thread_func(void *client)
             break;
         }
 
+        // keep trying to send until success, as the server expects a send before we recv
         while (1) {
             // now we are free to do network IO without blocking/locking the main thread
             code = acs_send(self->sock, buf, self->data_thread.flatsize);
@@ -187,6 +231,7 @@ static int thread_func(void *client)
         // receive header
         code = acs_recv(self->sock, (char *)&header, sizeof(header));
         if (code != ACS_OK) {
+            // upon failure, reset the UID and go back to step 1: try to send to the server
             *(uint32_t *)self->data_main.flatdata = 0;
             goto send;
         }
@@ -195,7 +240,7 @@ static int thread_func(void *client)
             break;
         }
 
-        // send message to uid which is READONLY from the main thread
+        // send message to uid which is READONLY from the main thread, grab first 4 bytes as UID
         *(uint32_t *)self->data_main.flatdata = header.uid;
 
         // no we can fill in who is there or not locally
@@ -206,6 +251,7 @@ static int thread_func(void *client)
         for ( ; header.obj_count > 0; header.obj_count--) {
             code = acs_recv(self->sock, buf, self->data_thread.flatsize);
             if (code != ACS_OK) {
+                // upon failure, reset UID and go back to step 1
                 *(uint32_t *)self->data_main.flatdata = 0;
                 goto send;
             }
@@ -412,13 +458,16 @@ void *acs_sync_read_next(struct acs_sync *self)
     assert(self);
     assert(self->state == ACS_SYNC_READ);
 
+    // first time called
     if (self->cursor_main == NULL) {
         self->cursor_main = list_iter_begin(self->recv_data);
     }
+    // subsequent times called
     else {
         list_iter_continue(&self->cursor_main);
     }
 
+    // the continue was NULL, so unlock the barrier and return NULL
     if (list_iter_done(self->cursor_main)) {
         self->cursor_main = NULL;
 
@@ -430,6 +479,7 @@ void *acs_sync_read_next(struct acs_sync *self)
         return NULL;
     }
 
+    // the continue wasn't NULL so return the next value
     return list_iter_value(self->cursor_main);
 }
 
