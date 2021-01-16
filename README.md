@@ -1,4 +1,5 @@
 # ACS
+The reason for this library is due to the lack of simple interfaces for having shared state between one server and many clients. There are many utilities for creating such a thing, but all of them are very large, not necessarily cross platform, or need some kind of autotools/cmake or something. Too complicated. All I want is something that can just work with this library as a submodule or something. Furthermore, there is so much complexity in handling clients for some other utilities, such as callback functions, etc. I figured the simplest possible interface would be as follows: send my client info, and traverse all other clients' info. This library allows for that to be possible.
 ```bash
 git clone git@github.com:/JacobLondon/actualcsock --recurse-submodules
 ```
